@@ -1,5 +1,9 @@
 # TokenManager Package
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/sxwebdev/tokenmanager.svg)](https://pkg.go.dev/github.com/sxwebdev/tokenmanager)
+[![Go Version](https://img.shields.io/badge/go-1.25-blue)](https://go.dev/)
+[![License](https://img.shields.io/github/license/sxwebdev/tokenmanager)](LICENSE)
+
 The `tokenmanager` package provides a flexible and generic implementation for token management. It allows you to create, validate, and revoke signed tokens using an abstract storage interface (`ITokenStore`). This package supports additional data (using Go generics) to be stored along with token metadata, such as user ID, issue time, expiry, and token type.
 
 ## Features
