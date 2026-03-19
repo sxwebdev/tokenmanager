@@ -21,6 +21,16 @@ The `tokenmanager` package provides a flexible and generic implementation for to
 - **Token Types**:  
   Supports different token types (e.g., access and refresh tokens).
 
+## AI Agent Skills
+
+This repository includes [AI agent skills](https://github.com/sxwebdev/skills) with documentation and usage examples for all packages. Install them with the [skills](https://github.com/sxwebdev/skills) CLI:
+
+```bash
+go install github.com/sxwebdev/skills/cmd/skills@latest
+skills init
+skills repo add sxwebdev/tokenmanager
+```
+
 ## Installation
 
 ```bash
