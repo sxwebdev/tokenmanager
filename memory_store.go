@@ -17,8 +17,10 @@ var (
 // MemoryTokenStore is an in‑memory implementation of ITokenStore.
 // It can be replaced with a Redis-based store or another external storage.
 type MemoryTokenStore struct {
-	mu    sync.RWMutex
-	store map[string]memoryItem
+	mu              sync.RWMutex
+	store           map[string]memoryItem
+	done            chan struct{}
+	cleanupInterval time.Duration
 }
 
 var _ ITokenStore = (*MemoryTokenStore)(nil)
@@ -29,12 +31,24 @@ type memoryItem struct {
 }
 
 // NewMemoryTokenStore creates a new in‑memory store.
-func NewMemoryTokenStore() *MemoryTokenStore {
+// An optional cleanup interval can be provided; defaults to 1 minute.
+func NewMemoryTokenStore(cleanupInterval ...time.Duration) *MemoryTokenStore {
+	interval := 1 * time.Minute
+	if len(cleanupInterval) > 0 && cleanupInterval[0] > 0 {
+		interval = cleanupInterval[0]
+	}
 	mts := &MemoryTokenStore{
-		store: make(map[string]memoryItem),
+		store:           make(map[string]memoryItem),
+		done:            make(chan struct{}),
+		cleanupInterval: interval,
 	}
 	go mts.cleanupLoop()
 	return mts
+}
+
+// Close stops the background cleanup goroutine.
+func (mts *MemoryTokenStore) Close() {
+	close(mts.done)
 }
 
 // Set stores the key and value for the specified duration.
@@ -73,14 +87,18 @@ func (mts *MemoryTokenStore) Delete(_ context.Context, key []byte) error {
 	return nil
 }
 
-// Keys returns all keys that start with the given prefix.
+// Keys returns all non-expired keys that start with the given prefix.
 func (mts *MemoryTokenStore) Keys(_ context.Context, prefix []byte) ([]string, error) {
 	mts.mu.RLock()
 	defer mts.mu.RUnlock()
 	var keys []string
 	pfx := string(prefix)
-	for k := range mts.store {
+	now := time.Now()
+	for k, item := range mts.store {
 		if strings.HasPrefix(k, pfx) {
+			if now.After(item.expiresAt) {
+				continue
+			}
 			keys = append(keys, k)
 		}
 	}
@@ -144,16 +162,21 @@ func (mts *MemoryTokenStore) Exists(ctx context.Context, key []byte) (bool, erro
 
 // cleanupLoop periodically removes expired items from the store.
 func (mts *MemoryTokenStore) cleanupLoop() {
-	ticker := time.NewTicker(1 * time.Minute)
+	ticker := time.NewTicker(mts.cleanupInterval)
 	defer ticker.Stop()
-	for range ticker.C {
-		now := time.Now()
-		mts.mu.Lock()
-		for k, item := range mts.store {
-			if now.After(item.expiresAt) {
-				delete(mts.store, k)
+	for {
+		select {
+		case <-ticker.C:
+			now := time.Now()
+			mts.mu.Lock()
+			for k, item := range mts.store {
+				if now.After(item.expiresAt) {
+					delete(mts.store, k)
+				}
 			}
+			mts.mu.Unlock()
+		case <-mts.done:
+			return
 		}
-		mts.mu.Unlock()
 	}
 }

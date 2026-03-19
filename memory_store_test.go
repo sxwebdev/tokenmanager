@@ -13,6 +13,7 @@ import (
 func TestSetAndGet(t *testing.T) {
 	ctx := context.Background()
 	store := tokenmanager.NewMemoryTokenStore()
+	defer store.Close()
 
 	key := []byte("testKey")
 	value := []byte("testValue")
@@ -34,6 +35,7 @@ func TestSetAndGet(t *testing.T) {
 func TestDelete(t *testing.T) {
 	ctx := context.Background()
 	store := tokenmanager.NewMemoryTokenStore()
+	defer store.Close()
 
 	key := []byte("deleteKey")
 	value := []byte("valueToDelete")
@@ -58,6 +60,7 @@ func TestDelete(t *testing.T) {
 func TestExpiration(t *testing.T) {
 	ctx := context.Background()
 	store := tokenmanager.NewMemoryTokenStore()
+	defer store.Close()
 
 	key := []byte("expireKey")
 	value := []byte("valueToExpire")
@@ -78,6 +81,7 @@ func TestExpiration(t *testing.T) {
 func TestKeys(t *testing.T) {
 	ctx := context.Background()
 	store := tokenmanager.NewMemoryTokenStore()
+	defer store.Close()
 
 	// Добавляем ключи с префиксом "prefix"
 	if err := store.Set(ctx, []byte("prefix1"), []byte("value1"), 5*time.Second); err != nil {
@@ -109,6 +113,7 @@ func TestKeys(t *testing.T) {
 func TestKeysAndValues(t *testing.T) {
 	ctx := context.Background()
 	store := tokenmanager.NewMemoryTokenStore()
+	defer store.Close()
 
 	if err := store.Set(ctx, []byte("test1"), []byte("val1"), 5*time.Second); err != nil {
 		t.Fatalf("Set failed: %v", err)
@@ -142,6 +147,7 @@ func TestKeysAndValues(t *testing.T) {
 func TestSetJSONAndGetFromJSON(t *testing.T) {
 	ctx := context.Background()
 	store := tokenmanager.NewMemoryTokenStore()
+	defer store.Close()
 
 	// Определяем тестовую структуру
 	type sample struct {
@@ -173,6 +179,7 @@ func TestSetJSONAndGetFromJSON(t *testing.T) {
 func TestExists(t *testing.T) {
 	ctx := context.Background()
 	store := tokenmanager.NewMemoryTokenStore()
+	defer store.Close()
 
 	// Проверяем несуществующий ключ
 	exists, err := store.Exists(ctx, []byte("nonexistent"))
@@ -212,9 +219,90 @@ func TestExists(t *testing.T) {
 	}
 }
 
+func TestKeysFiltersExpired(t *testing.T) {
+	ctx := context.Background()
+	store := tokenmanager.NewMemoryTokenStore()
+	defer store.Close()
+
+	// Добавляем ключ с коротким TTL и ключ с длинным TTL
+	if err := store.Set(ctx, []byte("prefix_short"), []byte("val1"), 100*time.Millisecond); err != nil {
+		t.Fatalf("Set failed: %v", err)
+	}
+	if err := store.Set(ctx, []byte("prefix_long"), []byte("val2"), 5*time.Second); err != nil {
+		t.Fatalf("Set failed: %v", err)
+	}
+
+	// Оба ключа должны быть видны
+	keys, err := store.Keys(ctx, []byte("prefix_"))
+	if err != nil {
+		t.Fatalf("Keys failed: %v", err)
+	}
+	if len(keys) != 2 {
+		t.Fatalf("expected 2 keys before expiration, got %d", len(keys))
+	}
+
+	// Ждём истечения короткого ключа
+	time.Sleep(150 * time.Millisecond)
+
+	keys, err = store.Keys(ctx, []byte("prefix_"))
+	if err != nil {
+		t.Fatalf("Keys failed: %v", err)
+	}
+	if len(keys) != 1 {
+		t.Fatalf("expected 1 key after expiration, got %d", len(keys))
+	}
+	if keys[0] != "prefix_long" {
+		t.Fatalf("expected key 'prefix_long', got %q", keys[0])
+	}
+}
+
+func TestClose(t *testing.T) {
+	store := tokenmanager.NewMemoryTokenStore()
+
+	// Close должен завершиться без паники
+	store.Close()
+
+	// Store продолжает работать для чтения/записи после Close (cleanup просто останавливается)
+	ctx := context.Background()
+	if err := store.Set(ctx, []byte("key"), []byte("val"), 5*time.Second); err != nil {
+		t.Fatalf("Set after Close failed: %v", err)
+	}
+	val, err := store.Get(ctx, []byte("key"))
+	if err != nil {
+		t.Fatalf("Get after Close failed: %v", err)
+	}
+	if string(val) != "val" {
+		t.Fatalf("expected 'val', got %q", val)
+	}
+}
+
+func TestNewMemoryTokenStoreWithCustomInterval(t *testing.T) {
+	ctx := context.Background()
+	store := tokenmanager.NewMemoryTokenStore(100 * time.Millisecond)
+	defer store.Close()
+
+	// Устанавливаем ключ с коротким TTL
+	if err := store.Set(ctx, []byte("fast_key"), []byte("val"), 50*time.Millisecond); err != nil {
+		t.Fatalf("Set failed: %v", err)
+	}
+
+	// Ждём, пока cleanup сработает (>100ms interval + >50ms TTL)
+	time.Sleep(200 * time.Millisecond)
+
+	// Ключ должен быть удалён cleanup-горутиной
+	exists, err := store.Exists(ctx, []byte("fast_key"))
+	if err != nil {
+		t.Fatalf("Exists failed: %v", err)
+	}
+	if exists {
+		t.Fatal("expected key to be cleaned up by custom interval cleanup")
+	}
+}
+
 func BenchmarkSet(b *testing.B) {
 	ctx := context.Background()
 	store := tokenmanager.NewMemoryTokenStore()
+	defer store.Close()
 
 	// Остановка таймера до начала цикла
 	b.ResetTimer()
@@ -230,6 +318,7 @@ func BenchmarkSet(b *testing.B) {
 func BenchmarkGet(b *testing.B) {
 	ctx := context.Background()
 	store := tokenmanager.NewMemoryTokenStore()
+	defer store.Close()
 	numKeys := 1000
 	keys := make([][]byte, numKeys)
 

@@ -85,34 +85,40 @@ func (tm *Manager[TAdditionalData]) CreateToken(
 	return signedToken, td, nil
 }
 
-// ValidateToken checks that the token has a valid format, that its signature is correct,
-// that the corresponding data can be retrieved from storage, and that it matches the expected type and is not expired.
-func (tm *Manager[TAdditionalData]) ValidateToken(ctx context.Context, signedToken string, expectedType TokenType) (*Data[TAdditionalData], bool) {
+// verifyAndExtractPayload validates the token format and HMAC signature,
+// returning the payload hex string on success.
+func (tm *Manager[TAdditionalData]) verifyAndExtractPayload(signedToken string) (string, error) {
 	if signedToken == "" {
-		return nil, false
+		return "", errors.New("token cannot be empty")
 	}
-
 	parts := strings.Split(signedToken, ".")
 	if len(parts) != 2 {
-		return nil, false
+		return "", errors.New("invalid token format")
 	}
-
 	payloadHex := parts[0]
 	providedSigHex := parts[1]
 
-	// Recalculate the signature.
 	payloadBytes, err := hex.DecodeString(payloadHex)
 	if err != nil {
-		return nil, false
+		return "", fmt.Errorf("invalid token payload: %w", err)
 	}
 	mac := hmac.New(sha256.New, tm.secretKey)
 	mac.Write(payloadBytes)
 	expectedSig := mac.Sum(nil)
 	expectedSigHex := hex.EncodeToString(expectedSig)
 	if !hmac.Equal([]byte(providedSigHex), []byte(expectedSigHex)) {
+		return "", errors.New("invalid token signature")
+	}
+	return payloadHex, nil
+}
+
+// ValidateToken checks that the token has a valid format, that its signature is correct,
+// that the corresponding data can be retrieved from storage, and that it matches the expected type and is not expired.
+func (tm *Manager[TAdditionalData]) ValidateToken(ctx context.Context, signedToken string, expectedType TokenType) (*Data[TAdditionalData], bool) {
+	payloadHex, err := tm.verifyAndExtractPayload(signedToken)
+	if err != nil {
 		return nil, false
 	}
-	// Retrieve the token data from storage.
 	data, err := tm.store.Get(ctx, getKey(payloadHex))
 	if err != nil {
 		return nil, false
@@ -130,30 +136,26 @@ func (tm *Manager[TAdditionalData]) ValidateToken(ctx context.Context, signedTok
 	return &td, true
 }
 
-// RevokeToken removes the token from the storage.
+// RevokeToken verifies the token signature and removes it from the storage.
 func (tm *Manager[TAdditionalData]) RevokeToken(ctx context.Context, signedToken string) error {
-	if signedToken == "" {
-		return errors.New("token cannot be empty")
+	payloadHex, err := tm.verifyAndExtractPayload(signedToken)
+	if err != nil {
+		return err
 	}
-
-	parts := strings.Split(signedToken, ".")
-	if len(parts) != 2 {
-		return errors.New("invalid token format")
-	}
-	return tm.store.Delete(ctx, getKey(parts[0]))
+	return tm.store.Delete(ctx, getKey(payloadHex))
 }
 
-// UpdateAdditionalData updates the token's additional data in the storage.
+// UpdateAdditionalData verifies the token signature and updates the token's additional data in the storage.
+// The original TTL is preserved (not reset).
 func (tm *Manager[TAdditionalData]) UpdateAdditionalData(
 	ctx context.Context,
 	signedToken string,
 	newAdditionalData TAdditionalData,
 ) error {
-	parts := strings.Split(signedToken, ".")
-	if len(parts) != 2 {
-		return errors.New("invalid token format")
+	payloadHex, err := tm.verifyAndExtractPayload(signedToken)
+	if err != nil {
+		return err
 	}
-	payloadHex := parts[0]
 
 	// Retrieve the token data from storage.
 	data, err := tm.store.Get(ctx, getKey(payloadHex))
@@ -165,6 +167,11 @@ func (tm *Manager[TAdditionalData]) UpdateAdditionalData(
 		return err
 	}
 
+	remaining := time.Until(td.Expiry)
+	if remaining <= 0 {
+		return errors.New("token has expired")
+	}
+
 	// Update the additional data.
 	td.AdditionalData = newAdditionalData
 	data, err = json.Marshal(td)
@@ -172,6 +179,6 @@ func (tm *Manager[TAdditionalData]) UpdateAdditionalData(
 		return err
 	}
 
-	// Save the updated token data back to storage.
-	return tm.store.Set(ctx, getKey(payloadHex), data, tm.tokenDuration)
+	// Save the updated token data back to storage with the remaining TTL.
+	return tm.store.Set(ctx, getKey(payloadHex), data, remaining)
 }
